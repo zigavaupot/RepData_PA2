@@ -1,0 +1,269 @@
+---
+title: "Reproducible Research: Peer Assessment 2"
+output: 
+  html_document:
+    keep_md: true
+---
+
+# Analysis of weather events impact on economy and population health
+
+## Synopsis
+
+Weather events have great impact on public health and economy. Based on historical data about weather events and their consequences, we could better understand their causes and prepare to avoid them in the future.
+
+NOAA storm database contains data for the last 65 years (in our database, available data is since 1950 until 2011).
+
+Data analysis is dealing with two main questions:
+
+1. Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+2. Across the United States, which types of events have the greatest economic consequences?
+
+Analysis has shown that tornados have the highest impact on population's health as they cause most of the fatalities and injuries alltogether. Analysis has also shown that flods cause the highest damages on property and crops. Additionally, the two most exposed states are Texas (population affected) and California (damages).
+
+## Data Processing
+
+To perform data processing and analysis, the following libraries are needed:
+
+``` {r load_libraries}
+library(knitr)
+library(stringdist)
+library(ggplot2)
+library(reshape2)
+library(grid)
+```
+
+Storm data can be downloaded from [this URL](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2).
+
+```{r read_storm_data, cache=TRUE}
+if(!file.exists("./repdata-data-StormData.csv.bz2")) {
+        fileURL <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+        download.file(fileURL, "repdata-data-StormData.csv.bz2")
+}
+data <- read.csv(bzfile("repdata-data-StormData.csv.bz2"))
+```
+
+Data set has `r dim(data)[1]` rows and  `r dim(data)[2]` columns. 
+
+In the analysis, the following columns will be used:
+
+* EVTYPE
+* FATALITIES
+* INJURIES
+* PROPDMG
+* PROPDMGEXP 
+* CROPDMG
+* CROPDMGEXP
+* STATE
+
+A new data frame dataStorms is created as a subset of original data:
+
+``` {r create_dataStorms}
+dataStorms <- data[c("EVTYPE", "FATALITIES", "INJURIES", "PROPDMG", "PROPDMGEXP", "CROPDMG", "CROPDMGEXP", "STATE")]
+```
+
+### Prepare event types for processing
+
+Additional documentation about Storms data can be found in the National Weather Service [Storm Data Documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf). There is Event Types table on page 6, which comprises event types into 48 groups. Which is definitely less than `r length(levels(dataStorms$EVTYPE))` event types in Storms dataset.
+
+In order to reduce number of levels of event types *amatch* function is used for approximate string matching. In general, there are probably better ways to reduce the number of values and to match the event types table, but I believe this approach still gives use good match results.
+
+Event types table can be downloaded [here](https://github.com/zigavaupot/RepData_PA2/blob/master/event_types.txt).
+
+After data is downlaoded, some additional processing on dataStorms data frame, like convert to upper case and remove leading/trailing spaces is done on both Storms data event type column as well as on Event types table (eventTypes data frame).
+
+```{r prepare_event_types}
+# convert EVTYPE to upper case and then trim leading and trailing spaces
+dataStorms$EVTYPE <- toupper(dataStorms$EVTYPE)
+trimSpaces <- function(x) gsub("^\\s+|\\s+$","", x)
+dataStorms$EVTYPE <- trimSpaces(dataStorms$EVTYPE)
+
+# read event types table and convert to upper case
+if(!file.exists("./event_types.txt")) {
+        fileURL <- "https://github.com/zigavaupot/RepData_PA2/blob/master/event_types.txt"
+        download.file(fileURL, "event_types.txt")
+}
+dataEventTypes <- read.csv("event_types.txt", header=TRUE)
+eventTypes <- toupper(dataEventTypes$EVENT_TYPE)
+```
+
+To find a match for each EVTYPE in dataStorms with EVENT_TYPE in eventTypes using Lavenshtein distance (method="lv") which counts the number of deletions, insertions and substitutions necessary to turn b into a.
+
+In dataStorms data frame, new column is created: EVTYPE_NORM.
+
+```{r use_amatch}
+dataStorms$EVTYPE_NORM <- eventTypes[amatch(dataStorms$EVTYPE, eventTypes, method="lv", maxDist=30)]
+```
+
+### Prepare data about damages for processing 
+
+Next we need to review data related to damages. Columns PROPDMGEXP and CROPDMGEXP hold the following data:
+
+```{r levels_cropdmgexp}
+levels(data$CROPDMGEXP)
+```
+```{r levels_propdmgexp}
+levels(data$PROPDMGEXP)
+```
+
+It is not clearly defined what this attributes actually mean, but as name indicates these two columns contain information about exponent. For example: if PROPDMGEXP contains value "k", then this means that value PROPDMG should be multiplied with 1000 (k=3, so 1000=10^3).
+
+The following rules and mappings are implemented:
+
+Column value    | Mapped to
+----------------|----------------
+digits 0..9     | digits 0..9
+H or h          | 2
+K or k          | 3
+M or m          | 6
+B or b          | 9
++               | 1
+- or ? or blank | 0
+
+```{r prepare_damage}
+dataStorms$PROPDMGEXP <- as.character(dataStorms$PROPDMGEXP)
+dataStorms$PROPDMGEXP[dataStorms$PROPDMGEXP==""] <- "0"
+dataStorms$PROPDMGEXP <- gsub("\\-|\\?", "0", dataStorms$PROPDMGEXP)
+dataStorms$PROPDMGEXP <- gsub("\\+", "1", dataStorms$PROPDMGEXP)
+dataStorms$PROPDMGEXP <- gsub("H|h", "2", dataStorms$PROPDMGEXP)
+dataStorms$PROPDMGEXP <- gsub("K|k", "3", dataStorms$PROPDMGEXP)
+dataStorms$PROPDMGEXP <- gsub("M|m", "6", dataStorms$PROPDMGEXP)
+dataStorms$PROPDMGEXP <- gsub("B|b", "9", dataStorms$PROPDMGEXP)
+
+dataStorms$CROPDMGEXP <- as.character(dataStorms$CROPDMGEXP)
+dataStorms$CROPDMGEXP[dataStorms$CROPDMGEXP==""] <- "0"
+dataStorms$CROPDMGEXP <- gsub("\\-|\\?", "0", dataStorms$CROPDMGEXP)
+dataStorms$CROPDMGEXP <- gsub("\\+", "1", dataStorms$CROPDMGEXP)
+dataStorms$CROPDMGEXP <- gsub("H|h", "2", dataStorms$CROPDMGEXP)
+dataStorms$CROPDMGEXP <- gsub("K|k", "3", dataStorms$CROPDMGEXP)
+dataStorms$CROPDMGEXP <- gsub("M|m", "6", dataStorms$CROPDMGEXP)
+dataStorms$CROPDMGEXP <- gsub("B|b", "9", dataStorms$CROPDMGEXP)
+```
+
+In the next step 2 new columns are created and calculated:
+
+$$ damageProperty = PROPDMG * 10 ^P $$
+$$ damageCrops = CROPDMG * 10 ^C $$
+
+where $P=PROPDMGEXP$ and $C=CROPDMGEXP$.
+
+```{r new_attributes}
+for(i in 0:9) {
+    dataStorms$damageProperty[dataStorms$PROPDMGEXP==i] <- dataStorms$PROPDMG[dataStorms$PROPDMGEXP==i]*10^i
+}
+for(i in 0:9) {
+    dataStorms$damageCrops[dataStorms$CROPDMGEXP==i] <- dataStorms$CROPDMG[dataStorms$CROPDMGEXP==i]*10^i
+}
+```
+
+## Results
+
+### Question 1. Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+
+To answer the 1st question, data from the original dataStorms dataset (only FATALITIES and INJURIES attributes are required) have to be aggregated by event types (EVTYPE_NORM). 
+
+Only top 10 event types, ordered by sum of FATALITIES and INJURIES, are going to be displayed and analyzed.
+
+```{r prepare_data_for_q1}
+aggQ1 <- aggregate(dataStorms[c("FATALITIES", "INJURIES")], list(EVENT_TYPE=dataStorms$EVTYPE_NORM), FUN=sum)
+aggQ1.sort <- aggQ1[order(aggQ1$FATALITIES + aggQ1$INJURIES, decreasing=TRUE),][1:10,]
+aggQ1.sort$EVENT_TYPE <- reorder(aggQ1.sort$EVENT_TYPE, -rowSums(aggQ1.sort[-1]))
+```
+
+Addtionally, aggregated date has to be reogranized, using *melt*, to be displayed as a bar chart.
+
+```{r use_melt_q1}
+aggQ1.melt <- melt(aggQ1.sort, id.var="EVENT_TYPE")
+```
+
+From the graph below, we can clearly see that Tornados are by far the most harmul event with the respect to fatalities and injuries.
+
+```{r plot_q1}
+q1 <- ggplot(aggQ1.melt, aes(x=EVENT_TYPE, y=value, fill=variable)) 
+q1 <- q1 + 
+        geom_bar(position="dodge", stat="identity") +
+        scale_fill_brewer(palette="Set1") +
+        ylab("Total Fatalities/Injuries") + xlab("Event type") +
+        ggtitle("The top 10 most harmful events with respect to population health ")+
+        theme(plot.title = element_text(size=12, vjust=2, hjust=1))+
+        theme(axis.text.x = element_text(angle=90, size=8))+
+        theme(axis.text.y = element_text(size=8))+
+        theme(plot.margin = unit(c(1,1,1,1), "cm"))
+print(q1)
+```
+
+### Question 2. Across the United States, which types of events have the greatest economic consequences?
+
+To answer the 2nd question, data from the original dataStorms dataset (only damageProperty and damageCrops attributes are required) have to be aggregated by event types (EVTYPE_NORM). 
+
+Similar to question 1, the analysis would focus on top 10 event types, ordered by sum of damageCrops and damageProperty attributes.
+
+```{r prepare_data_for_q2}
+aggQ2 <- aggregate(dataStorms[c("damageProperty", "damageCrops")], list(EVENT_TYPE=dataStorms$EVTYPE_NORM), FUN=sum)
+aggQ2.sort <- aggQ2[order(aggQ2$damageProperty + aggQ2$damageCrops, decreasing=TRUE),][1:10,]
+aggQ2.sort$EVENT_TYPE <- reorder(aggQ2.sort$EVENT_TYPE, -rowSums(aggQ2.sort[-1]))
+```
+
+To simplify graph damageProperty and damageCrops will presentated in billions USD as a unit of measure.
+
+```{r divide_damages}
+aggQ2.sort$damageProperty <- aggQ2.sort$damageProperty / 1000000000
+aggQ2.sort$damageCrops <- aggQ2.sort$damageCrops / 1000000000
+```
+
+Again, aggregated data has to be reogranized, using *melt*, to be displayed as a bar chart.
+
+```{r plot_q2}
+aggQ2.melt <- melt(aggQ2.sort, id.var="EVENT_TYPE")
+
+q2 <- ggplot(aggQ2.melt, aes(x=EVENT_TYPE, y=value, fill=variable)) 
+q2 <- q2 + 
+        geom_bar(stat="identity") +
+        scale_fill_brewer(palette="Set1") +
+        ylab("Damage in billion US dollars") + xlab("Event type") +
+        ggtitle("The top 10 events with greatest economic consequences")+
+        theme(plot.title = element_text(size=12, vjust=2, hjust=1))+
+        theme(axis.text.x = element_text(angle=90))+
+        theme(plot.margin = unit(c(1,1,1,1), "cm"))
+print(q2)
+```
+
+From the graph above, we can see that Flood has the greatest economic consequences, by total and by Property damages, wheres the highest Crops damages are caused by Drought.
+
+## Question 3: Which states are affected the most?
+
+This question was not amongst the two questions asked in the beginning of this project. However it has popped up during the analysis. Therefore I decided to add it to my analysis.
+
+First, we need to create a data frame that contains aggregated data for Nubmer of events, Total value of damages (property and crops) and Total number of population affected (fatalities and injuries).
+
+```{r prepare_ggregated_data_by_state}
+statesNrEvents <- aggregate(dataStorms$STATE, by=list(STATE=dataStorms$STATE), FUN=NROW)
+statesAgg <- aggregate(dataStorms[c("damageProperty", "damageCrops","FATALITIES", "INJURIES")], by=list(STATE=dataStorms$STATE), FUN=sum)
+statesAgg <- cbind(statesAgg, statesNrEvents$x)
+names(statesAgg) <- c("STATE","damageProperty", "damageCrops","FATALITIES", "INJURIES", "numberOfEvents")
+```
+
+To enable easier visualization, measures are normalized.
+
+```{r normalize_values}
+statesAgg$damage <- (statesAgg$damageCrops + statesAgg$damageProperty) / 1000000000
+statesAgg$populationAffected <- (statesAgg$FATALITIES + statesAgg$INJURIES) / 1000
+```
+
+```{r plot_q3}
+q3 <- ggplot(statesAgg, aes(x=damage, y=populationAffected, size=numberOfEvents,label=STATE), guide=FALSE) 
+q3 <- q3+ 
+        geom_point(colour="white", fill="red", shape=21) + 
+        scale_size_area(max_size = 20)+
+        geom_text(size=3) +
+        scale_x_continuous(name="Damage in billion US dollars", limits=c(0,150))+
+        scale_y_continuous(name="Population affected (fatalities & injuries) in 000s", limits=c(0,20))
+
+print(q3)
+```
+
+Bubble chart above shows that Texas is the most affected state by number of events and population affected, whereas California is the state with the highest damages.
+
+
+
+
+
